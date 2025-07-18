@@ -1,1 +1,37 @@
+# Secrets / local config
 .env
+.env.*
+!.env.example
+**/.env
+!**/.env.example
+*.pem
+*.key
+
+# Build artifacts
+bootstrap
+bootstrap-processor
+*.zip
+bin/
+vendor/
+
+# Serverless Framework state (contains packaged zips and resolved env vars)
+.serverless/
+
+# Hot-reload / tool temp dirs
+tmp/
+**/tmp/
+
+# n8n local data
+n8n/data/
+n8n/*.sqlite
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
