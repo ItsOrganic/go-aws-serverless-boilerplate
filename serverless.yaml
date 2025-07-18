@@ -1,0 +1,24 @@
+service: serverless-go
+frameworkVersion: '>= 4.17.1'
+useDotenv: true
+
+provider:
+  name: aws
+  runtime: provided.al2
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  logs:
+    restApi: true  # Enable API Gateway logs
+  
+functions:
+  api:
+    memorySize: 3008
+    timeout: 10
+    handler: bootstrap
+    events:
+      - http:
+          path: /api/v1/hello
+          method: get
+
+package:
+  artifact: function.zip
