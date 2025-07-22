@@ -7,18 +7,122 @@ provider:
   runtime: provided.al2
   region: us-east-1
   stage: ${opt:stage, 'dev'}
+  timeout: 900
+  memorySize: 3008
   logs:
-    restApi: true  # Enable API Gateway logs
-  
+    restApi: true
+  vpc:
+    securityGroupIds:
+      - sg-0c3ccb75945a62874
+    subnetIds:
+      - subnet-0840e24b95e7e63f1
+      - subnet-0ef1d1277b8a0c121
+      - subnet-08f1453c256327fd9
+      - subnet-0e432197340fa2d9d
+      - subnet-0b38973ad5720b874
+      - subnet-034ed114257636681
+  environment:
+    GIN_MODE: release
+    # No defaults on purpose: deploy fails loudly if these are missing from the
+    # shell environment or the local (git-ignored) .env file.
+    DATABASE_ENDPOINT: ${env:DATABASE_ENDPOINT}
+    DATABASE_PORT: ${env:DATABASE_PORT, '5432'}
+    DATABASE_NAME: ${env:DATABASE_NAME}
+    DATABASE_USER: ${env:DATABASE_USER}
+    DATABASE_PASSWORD: ${env:DATABASE_PASSWORD}
+    DATABASE_SSLMODE: ${env:DATABASE_SSLMODE, 'require'}
+    API_KEY: ${env:API_KEY}
+    CSV_BUCKET_NAME: ${self:service}-csv-uploads-${self:provider.stage}
+    SQS_QUEUE_URL:
+      Ref: CSVProcessingQueue
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+          Resource: arn:aws:s3:::${self:service}-csv-uploads-${self:provider.stage}/uploads/*
+
 functions:
   api:
-    memorySize: 3008
-    timeout: 10
+    memorySize: 512
+    timeout: 29
     handler: bootstrap
+    environment:
+      APP_MODE: api
     events:
       - http:
-          path: /api/v1/hello
-          method: get
+          path: /{proxy+}
+          method: any
+          cors: true
+
+  csvProcessor:
+    handler: bootstrap
+    timeout: 900
+    memorySize: 1024
+    environment:
+      APP_MODE: csv-processor
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt: [CSVProcessingQueue, Arn]
+          batchSize: 1
+
+resources:
+  Resources:
+    CSVUploadBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-csv-uploads-${self:provider.stage}
+        NotificationConfiguration:
+          QueueConfigurations:
+            - Event: s3:ObjectCreated:*
+              Queue: 
+                Fn::GetAtt: [CSVProcessingQueue, Arn]
+              Filter:
+                S3Key:
+                  Rules:
+                    - Name: prefix
+                      Value: uploads/
+                    - Name: suffix
+                      Value: .csv
+    
+    CSVDeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-csv-processing-${self:provider.stage}-dlq
+    
+    CSVProcessingQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-csv-processing-${self:provider.stage}
+        VisibilityTimeout: 960
+        RedrivePolicy:
+          deadLetterTargetArn: 
+            Fn::GetAtt: [CSVDeadLetterQueue, Arn]
+          maxReceiveCount: 3
+    
+    CSVProcessingQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: s3.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: 
+                Fn::GetAtt: [CSVProcessingQueue, Arn]
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: 
+                    Fn::Sub: "arn:aws:s3:::${self:service}-csv-uploads-${self:provider.stage}"
+        Queues:
+          - Ref: CSVProcessingQueue
 
 package:
-  artifact: function.zip
+  patterns:
+    - '!./**'
+    - './bootstrap'
