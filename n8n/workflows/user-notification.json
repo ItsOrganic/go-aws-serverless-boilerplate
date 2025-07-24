@@ -1,0 +1,236 @@
+{
+  "name": "User Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "user-notification",
+        "options": {}
+      },
+      "id": "1",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.LOANMATCH_API_URL }}/api/v1/n8n/users/notification",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LOANMATCH_API_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "2",
+      "name": "Get Users for Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "users",
+        "options": {}
+      },
+      "id": "3",
+      "name": "Split Users",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 3.3,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.LOANMATCH_API_URL }}/api/v1/n8n/users/{{ $json.user_id }}/matches",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LOANMATCH_API_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "4",
+      "name": "Get User Matches",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate personalized email content\nconst userData = $('Split Users').first().json;\nconst matchesData = $input.first().json;\n\nconst userName = userData.name || 'Valued Customer';\nconst userEmail = userData.email;\nconst matches = matchesData.matches || [];\n\n// Create email subject\nconst subject = `🎉 ${matches.length} Personal Loan Options Found for You!`;\n\n// Generate email body\nlet emailBody = `\n<!DOCTYPE html>\n<html>\n<head>\n    <style>\n        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }\n        .header { background-color: #4CAF50; color: white; padding: 20px; text-align: center; }\n        .content { padding: 20px; }\n        .loan-card { border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin: 10px 0; background-color: #f9f9f9; }\n        .lender { font-weight: bold; color: #4CAF50; font-size: 18px; }\n        .rate { color: #FF6B6B; font-weight: bold; }\n        .score { background-color: #E3F2FD; padding: 5px 10px; border-radius: 15px; font-size: 12px; }\n        .footer { background-color: #f1f1f1; padding: 15px; text-align: center; font-size: 12px; }\n    </style>\n</head>\n<body>\n    <div class=\"header\">\n        <h1>Personal Loan Matches Found!</h1>\n        <p>Hello ${userName}, we found ${matches.length} loan options tailored for you</p>\n    </div>\n    \n    <div class=\"content\">\n        <h2>Your Personalized Loan Recommendations</h2>\n        <p>Based on your profile, here are the loan products you're eligible for:</p>\n`;\n\n// Add loan cards\nmatches.slice(0, 5).forEach((match, index) => {\n    const eligibilityBadge = match.eligibility_status === 'eligible' ? \n        '<span class=\"score\" style=\"background-color: #C8E6C9;\">✅ Highly Eligible</span>' :\n        '<span class=\"score\" style=\"background-color: #FFF3E0;\">⚠️ Partially Eligible</span>';\n    \n    const matchScore = Math.round(match.match_score * 100);\n    \n    emailBody += `\n        <div class=\"loan-card\">\n            <div class=\"lender\">${match.lender_name}</div>\n            <h3>${match.product_name}</h3>\n            <p><strong>Interest Rate:</strong> <span class=\"rate\">${match.interest_rate_min}% - ${match.interest_rate_max}%</span></p>\n            <p><strong>Loan Amount:</strong> ₹${(match.loan_amount_min/100000).toFixed(1)}L - ₹${(match.loan_amount_max/100000).toFixed(1)}L</p>\n            <p><strong>Match Score:</strong> ${matchScore}%</p>\n            <p>${eligibilityBadge}</p>\n            <p><strong>Why this matches:</strong> ${match.match_reasons.slice(0,3).join(', ')}</p>\n        </div>\n    `;\n});\n\nif (matches.length > 5) {\n    emailBody += `<p><strong>And ${matches.length - 5} more options available!</strong></p>`;\n}\n\nemailBody += `\n        <div style=\"background-color: #E8F5E8; padding: 15px; border-radius: 8px; margin: 20px 0;\">\n            <h3>💡 Next Steps:</h3>\n            <ol>\n                <li>Review the loan options above</li>\n                <li>Compare interest rates and terms</li>\n                <li>Check with the lenders directly for final approval</li>\n                <li>Ensure you have all required documents ready</li>\n            </ol>\n        </div>\n        \n        <p><strong>Important:</strong> These are indicative matches based on your profile. Final approval depends on the lender's detailed verification process.</p>\n    </div>\n    \n    <div class=\"footer\">\n        <p>This email was sent because you recently uploaded your information to our loan matching service.</p>\n        <p>© 2024 Loan Eligibility Engine. All rights reserved.</p>\n    </div>\n</body>\n</html>\n`;\n\nreturn [{\n    json: {\n        user_id: userData.user_id,\n        user_name: userName,\n        user_email: userEmail,\n        email_subject: subject,\n        email_body: emailBody,\n        matched_products_count: matches.length,\n        notification_type: 'loan_matches'\n    }\n}];"
+      },
+      "id": "5",
+      "name": "Generate Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@yourdomain.com",
+        "toEmail": "={{ $json.user_email }}",
+        "subject": "={{ $json.email_subject }}",
+        "emailType": "html",
+        "message": "={{ $json.email_body }}",
+        "additionalFields": {
+          "replyToEmail": "support@yourdomain.com"
+        }
+      },
+      "id": "6",
+      "name": "Send Email (SES)",
+      "type": "n8n-nodes-base.awsSes",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOANMATCH_API_URL }}/api/v1/n8n/notifications",
+        "body": {
+          "user_id": "={{ $json.user_id }}",
+          "notification_type": "={{ $json.notification_type }}",
+          "email_subject": "={{ $json.email_subject }}",
+          "email_body": "={{ $json.email_body }}",
+          "matched_products_count": "={{ $json.matched_products_count }}",
+          "email_status": "sent"
+        },
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LOANMATCH_API_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "7",
+      "name": "Record Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log notification results\nconst results = $input.all();\nconst totalNotifications = results.length;\n\nconsole.log(`User Notification workflow completed. Sent ${totalNotifications} notifications.`);\n\nreturn [{ \n  json: { \n    workflow: 'User Notification',\n    execution_time: new Date().toISOString(),\n    notifications_sent: totalNotifications,\n    status: 'completed'\n  } \n}];"
+      },
+      "id": "8",
+      "name": "Log Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Users for Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Users for Notification": {
+      "main": [
+        [
+          {
+            "node": "Split Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Users": {
+      "main": [
+        [
+          {
+            "node": "Get User Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get User Matches": {
+      "main": [
+        [
+          {
+            "node": "Generate Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Email Content": {
+      "main": [
+        [
+          {
+            "node": "Send Email (SES)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email (SES)": {
+      "main": [
+        [
+          {
+            "node": "Record Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Notification": {
+      "main": [
+        [
+          {
+            "node": "Log Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

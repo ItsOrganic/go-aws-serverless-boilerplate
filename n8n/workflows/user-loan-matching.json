@@ -1,0 +1,367 @@
+{
+  "name": "User-Loan Matching",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "user-loan-matching",
+        "options": {}
+      },
+      "id": "1",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "user-loan-matching"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.LOANMATCH_API_URL }}/api/v1/n8n/users/new",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LOANMATCH_API_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "2",
+      "name": "Get New Users",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.LOANMATCH_API_URL }}/api/v1/n8n/loan-products",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LOANMATCH_API_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "3",
+      "name": "Get Loan Products",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Stage 1: Fast SQL-based Pre-filtering\n// This reduces candidates by 80-90% using basic criteria\n\nconst users = $('Get New Users').first().json.users;\nconst products = $('Get Loan Products').first().json.products;\n\nconst matches = [];\n\nfor (const user of users) {\n  for (const product of products) {\n    // Fast pre-filtering logic\n    let isEligible = true;\n    let matchReasons = [];\n    let disqualifyReasons = [];\n    \n    // Income check\n    if (product.min_monthly_income && user.monthly_income) {\n      if (user.monthly_income < product.min_monthly_income) {\n        disqualifyReasons.push(`Income ${user.monthly_income} < required ${product.min_monthly_income}`);\n        isEligible = false;\n      } else {\n        matchReasons.push('Income requirement met');\n      }\n    }\n    \n    // Credit score check\n    if (product.min_credit_score && user.credit_score) {\n      if (user.credit_score < product.min_credit_score) {\n        disqualifyReasons.push(`Credit score ${user.credit_score} < required ${product.min_credit_score}`);\n        isEligible = false;\n      } else {\n        matchReasons.push('Credit score requirement met');\n      }\n    }\n    \n    // Age check\n    if (product.min_age && product.max_age && user.age) {\n      if (user.age < product.min_age || user.age > product.max_age) {\n        disqualifyReasons.push(`Age ${user.age} not in range ${product.min_age}-${product.max_age}`);\n        isEligible = false;\n      } else {\n        matchReasons.push('Age requirement met');\n      }\n    }\n    \n    // Employment status check\n    if (product.employment_types && product.employment_types.length > 0) {\n      const userEmployment = user.employment_status?.toLowerCase();\n      const acceptedTypes = product.employment_types.map(type => type.toLowerCase());\n      \n      if (!acceptedTypes.includes(userEmployment)) {\n        disqualifyReasons.push(`Employment ${user.employment_status} not accepted`);\n        isEligible = false;\n      } else {\n        matchReasons.push('Employment requirement met');\n      }\n    }\n    \n    // Only proceed with eligible matches for Stage 2\n    if (isEligible) {\n      // Calculate basic match score (0-1)\n      let matchScore = 0.0;\n      let scoreComponents = 0;\n      \n      // Income score component\n      if (product.min_monthly_income && user.monthly_income) {\n        const incomeRatio = user.monthly_income / product.min_monthly_income;\n        matchScore += Math.min(incomeRatio / 2, 0.3); // Max 0.3 for income\n        scoreComponents++;\n      }\n      \n      // Credit score component\n      if (product.min_credit_score && user.credit_score) {\n        const creditRatio = (user.credit_score - 300) / (850 - 300); // Normalize to 0-1\n        matchScore += creditRatio * 0.4; // Max 0.4 for credit score\n        scoreComponents++;\n      }\n      \n      // Age component (younger is generally better for loans)\n      if (product.min_age && product.max_age && user.age) {\n        const ageScore = 1 - ((user.age - product.min_age) / (product.max_age - product.min_age));\n        matchScore += ageScore * 0.2; // Max 0.2 for age\n        scoreComponents++;\n      }\n      \n      // Employment bonus\n      if (user.employment_status === 'Salaried') {\n        matchScore += 0.1;\n      }\n      \n      matchScore = Math.min(matchScore, 1.0);\n      \n      matches.push({\n        user_id: user.user_id,\n        product_id: product.product_id,\n        match_score: Math.round(matchScore * 100) / 100,\n        eligibility_status: 'eligible',\n        match_reasons: matchReasons,\n        user_data: user,\n        product_data: product,\n        stage: 'pre_filtered'\n      });\n    }\n  }\n}\n\nconsole.log(`Stage 1 Pre-filtering: ${matches.length} potential matches from ${users.length * products.length} combinations`);\n\nreturn matches.map(match => ({ json: match }));"
+      },
+      "id": "4",
+      "name": "Stage 1: Pre-filtering",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Stage 2: Advanced Matching Logic\n// Apply more sophisticated criteria and scoring\n\nconst matches = $input.all().map(item => item.json);\nconst advancedMatches = [];\n\nfor (const match of matches) {\n  const user = match.user_data;\n  const product = match.product_data;\n  let advancedScore = match.match_score;\n  let advancedReasons = [...match.match_reasons];\n  \n  // Advanced scoring factors\n  \n  // 1. Income-to-EMI ratio (30% of income should cover EMI)\n  if (user.monthly_income && product.loan_amount_max && product.interest_rate_max) {\n    const assumedLoanAmount = Math.min(user.monthly_income * 60, product.loan_amount_max); // 60x income or max amount\n    const monthlyRate = (product.interest_rate_max / 100) / 12;\n    const tenure = 36; // 3 years default\n    const emi = (assumedLoanAmount * monthlyRate * Math.pow(1 + monthlyRate, tenure)) / (Math.pow(1 + monthlyRate, tenure) - 1);\n    const emiRatio = emi / user.monthly_income;\n    \n    if (emiRatio <= 0.3) {\n      advancedScore += 0.1;\n      advancedReasons.push('Good EMI-to-income ratio');\n    } else if (emiRatio <= 0.4) {\n      advancedReasons.push('Acceptable EMI-to-income ratio');\n    } else {\n      advancedScore -= 0.1;\n      advancedReasons.push('High EMI-to-income ratio');\n    }\n  }\n  \n  // 2. Credit score excellence bonus\n  if (user.credit_score >= 750) {\n    advancedScore += 0.15;\n    advancedReasons.push('Excellent credit score');\n  } else if (user.credit_score >= 700) {\n    advancedScore += 0.05;\n    advancedReasons.push('Good credit score');\n  }\n  \n  // 3. Interest rate attractiveness (lower rates get higher scores)\n  if (product.interest_rate_min) {\n    if (product.interest_rate_min <= 10) {\n      advancedScore += 0.1;\n      advancedReasons.push('Very competitive interest rate');\n    } else if (product.interest_rate_min <= 15) {\n      advancedScore += 0.05;\n      advancedReasons.push('Competitive interest rate');\n    }\n  }\n  \n  // 4. Employment stability bonus\n  if (user.employment_status === 'Salaried' && user.monthly_income >= 50000) {\n    advancedScore += 0.05;\n    advancedReasons.push('Stable high-income employment');\n  }\n  \n  // Cap the score at 1.0\n  advancedScore = Math.min(advancedScore, 1.0);\n  \n  // Only keep high-quality matches (score >= 0.6)\n  if (advancedScore >= 0.6) {\n    advancedMatches.push({\n      user_id: match.user_id,\n      product_id: match.product_id,\n      match_score: Math.round(advancedScore * 100) / 100,\n      eligibility_status: advancedScore >= 0.8 ? 'eligible' : 'partially_eligible',\n      match_reasons: advancedReasons,\n      stage: 'advanced_filtered'\n    });\n  }\n}\n\nconsole.log(`Stage 2 Advanced Filtering: ${advancedMatches.length} high-quality matches from ${matches.length} pre-filtered`);\n\nreturn advancedMatches.map(match => ({ json: match }));"
+      },
+      "id": "5",
+      "name": "Stage 2: Advanced Logic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Stage 3: AI Analysis (Only for top matches)\n// Select top 20% of matches for expensive AI analysis\n\nconst matches = $input.all().map(item => item.json);\n\n// Sort by score and take top 20% or max 50 matches\nconst sortedMatches = matches.sort((a, b) => b.match_score - a.match_score);\nconst topCount = Math.min(Math.ceil(sortedMatches.length * 0.2), 50);\nconst topMatches = sortedMatches.slice(0, topCount);\nconst remainingMatches = sortedMatches.slice(topCount);\n\nconsole.log(`Stage 3 AI Selection: ${topMatches.length} matches selected for AI analysis out of ${matches.length}`);\n\n// Return both sets with different flags\nconst results = [];\n\n// Top matches for AI analysis\ntopMatches.forEach(match => {\n  results.push({\n    json: {\n      ...match,\n      needs_ai_analysis: true,\n      stage: 'ai_candidate'\n    }\n  });\n});\n\n// Remaining matches go directly to storage\nremainingMatches.forEach(match => {\n  results.push({\n    json: {\n      ...match,\n      needs_ai_analysis: false,\n      stage: 'final_match'\n    }\n  });\n});\n\nreturn results;"
+      },
+      "id": "6",
+      "name": "Stage 3: AI Selection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition1",
+              "leftValue": "={{ $json.needs_ai_analysis }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7",
+      "name": "Route AI Matches",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-3.5-turbo",
+        "messages": {
+          "messageType": "multipleMessages",
+          "values": [
+            {
+              "message": "=You are a loan eligibility expert. Analyze this user-product match and provide insights.\n\nUser Profile:\n- Monthly Income: ${{ $json.user_data.monthly_income }}\n- Credit Score: {{ $json.user_data.credit_score }}\n- Age: {{ $json.user_data.age }}\n- Employment: {{ $json.user_data.employment_status }}\n\nLoan Product:\n- Product: {{ $json.product_data.product_name }}\n- Lender: {{ $json.product_data.lender_name }}\n- Interest Rate: {{ $json.product_data.interest_rate_min }}% - {{ $json.product_data.interest_rate_max }}%\n- Loan Amount: ${{ $json.product_data.loan_amount_min }} - ${{ $json.product_data.loan_amount_max }}\n\nCurrent Match Score: {{ $json.match_score }}\n\nPlease provide:\n1. A refined eligibility assessment\n2. Specific recommendations for the user\n3. Any risks or considerations\n\nRespond in exactly this JSON format:\n{\n  \"refined_score\": 0.85,\n  \"eligibility_status\": \"eligible\",\n  \"ai_insights\": \"Brief analysis here\",\n  \"recommendations\": \"Specific recommendations here\"\n}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 300
+        }
+      },
+      "id": "8",
+      "name": "AI Analysis (OpenAI)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [
+        1560,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process AI results and combine with match data\nconst match = $('Route AI Matches').first().json;\nconst aiResponse = $input.first().json.choices[0].message.content;\n\ntry {\n  const aiAnalysis = JSON.parse(aiResponse);\n  \n  const finalMatch = {\n    user_id: match.user_id,\n    product_id: match.product_id,\n    match_score: aiAnalysis.refined_score || match.match_score,\n    eligibility_status: aiAnalysis.eligibility_status || match.eligibility_status,\n    match_reasons: match.match_reasons,\n    ai_analysis: `${aiAnalysis.ai_insights} | Recommendations: ${aiAnalysis.recommendations}`,\n    stage: 'ai_analyzed'\n  };\n  \n  return [{ json: finalMatch }];\n} catch (error) {\n  console.log('AI parsing error, using original match:', error);\n  return [{ json: {\n    ...match,\n    ai_analysis: 'AI analysis failed - using original scoring',\n    stage: 'ai_failed'\n  } }];\n}"
+      },
+      "id": "9",
+      "name": "Process AI Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "10",
+      "name": "Merge Final Matches",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1780,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOANMATCH_API_URL }}/api/v1/n8n/matches",
+        "body": {
+          "matches": "={{ $json }}"
+        },
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LOANMATCH_API_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "11",
+      "name": "Store Matches",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2000,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WEBHOOK_URL }}webhook/user-notification",
+        "body": {
+          "trigger_notification": true,
+          "matches_stored": "={{ $json.processed }}"
+        },
+        "options": {}
+      },
+      "id": "12",
+      "name": "Trigger Notification Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2220,
+        350
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get New Users",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Loan Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get New Users": {
+      "main": [
+        [
+          {
+            "node": "Stage 1: Pre-filtering",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Loan Products": {
+      "main": [
+        [
+          {
+            "node": "Stage 1: Pre-filtering",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 1: Pre-filtering": {
+      "main": [
+        [
+          {
+            "node": "Stage 2: Advanced Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 2: Advanced Logic": {
+      "main": [
+        [
+          {
+            "node": "Stage 3: AI Selection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 3: AI Selection": {
+      "main": [
+        [
+          {
+            "node": "Route AI Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route AI Matches": {
+      "main": [
+        [
+          {
+            "node": "AI Analysis (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Final Matches",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "AI Analysis (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Process AI Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process AI Results": {
+      "main": [
+        [
+          {
+            "node": "Merge Final Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Final Matches": {
+      "main": [
+        [
+          {
+            "node": "Store Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Matches": {
+      "main": [
+        [
+          {
+            "node": "Trigger Notification Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

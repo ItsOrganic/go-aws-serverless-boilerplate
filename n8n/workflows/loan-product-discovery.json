@@ -1,0 +1,219 @@
+{
+  "name": "Loan Product Discovery",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "0 6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "1",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://www.bankbazaar.com/personal-loan.html",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "2",
+      "name": "BankBazaar Scraper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://www.paisabazaar.com/personal-loan/",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "3",
+      "name": "PaisaBazaar Scraper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BankBazaar HTML Parser\nconst cheerio = require('cheerio');\nconst html = $input.first().json.data;\nconst $ = cheerio.load(html);\n\nconst products = [];\n\n// Parse loan products (adjust selectors based on actual HTML)\n$('.loan-product-card').each((i, element) => {\n  const $el = $(element);\n  \n  const product = {\n    product_name: $el.find('.product-name').text().trim(),\n    lender_name: $el.find('.lender-name').text().trim(),\n    interest_rate_min: parseFloat($el.find('.rate-min').text().replace(/[^0-9.]/g, '')),\n    interest_rate_max: parseFloat($el.find('.rate-max').text().replace(/[^0-9.]/g, '')),\n    loan_amount_min: parseFloat($el.find('.amount-min').text().replace(/[^0-9]/g, '')),\n    loan_amount_max: parseFloat($el.find('.amount-max').text().replace(/[^0-9]/g, '')),\n    min_monthly_income: parseFloat($el.find('.min-income').text().replace(/[^0-9]/g, '')),\n    min_credit_score: parseInt($el.find('.min-credit').text().replace(/[^0-9]/g, '')),\n    employment_types: ['Salaried', 'Self-Employed'], // Default\n    min_age: 21,\n    max_age: 60,\n    source_url: 'https://www.bankbazaar.com/personal-loan.html'\n  };\n  \n  if (product.product_name && product.lender_name) {\n    products.push(product);\n  }\n});\n\nreturn products.map(product => ({ json: product }));"
+      },
+      "id": "4",
+      "name": "Parse BankBazaar Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// PaisaBazaar HTML Parser\nconst cheerio = require('cheerio');\nconst html = $input.first().json.data;\nconst $ = cheerio.load(html);\n\nconst products = [];\n\n// Parse loan products (adjust selectors based on actual HTML)\n$('.product-tile').each((i, element) => {\n  const $el = $(element);\n  \n  const product = {\n    product_name: $el.find('.product-title').text().trim(),\n    lender_name: $el.find('.bank-name').text().trim(),\n    interest_rate_min: parseFloat($el.find('.interest-rate').text().match(/([0-9.]+)/)?.[1] || '0'),\n    interest_rate_max: parseFloat($el.find('.interest-rate').text().match(/([0-9.]+)%/g)?.[1]?.replace('%', '') || '0'),\n    loan_amount_min: 50000, // Default\n    loan_amount_max: parseFloat($el.find('.max-amount').text().replace(/[^0-9]/g, '')),\n    min_monthly_income: parseFloat($el.find('.salary-req').text().replace(/[^0-9]/g, '')),\n    min_credit_score: parseInt($el.find('.cibil-req').text().replace(/[^0-9]/g, '')) || 650,\n    employment_types: ['Salaried', 'Self-Employed'],\n    min_age: 21,\n    max_age: 60,\n    source_url: 'https://www.paisabazaar.com/personal-loan/'\n  };\n  \n  if (product.product_name && product.lender_name) {\n    products.push(product);\n  }\n});\n\nreturn products.map(product => ({ json: product }));"
+      },
+      "id": "5",
+      "name": "Parse PaisaBazaar Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "6",
+      "name": "Merge Products",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOANMATCH_API_URL }}/api/v1/n8n/loan-products",
+        "body": {
+          "products": "={{ $json }}",
+          "source": "web_crawler"
+        },
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LOANMATCH_API_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "7",
+      "name": "Store in Database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log execution results\nconst results = $input.all();\nconst totalProducts = results.length;\n\nconsole.log(`Loan Product Discovery completed. Found ${totalProducts} products.`);\n\nreturn [{ \n  json: { \n    workflow: 'Loan Product Discovery',\n    execution_time: new Date().toISOString(),\n    products_found: totalProducts,\n    status: 'completed'\n  } \n}];"
+      },
+      "id": "8",
+      "name": "Log Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "BankBazaar Scraper",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "PaisaBazaar Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BankBazaar Scraper": {
+      "main": [
+        [
+          {
+            "node": "Parse BankBazaar Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PaisaBazaar Scraper": {
+      "main": [
+        [
+          {
+            "node": "Parse PaisaBazaar Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse BankBazaar Data": {
+      "main": [
+        [
+          {
+            "node": "Merge Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse PaisaBazaar Data": {
+      "main": [
+        [
+          {
+            "node": "Merge Products",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Products": {
+      "main": [
+        [
+          {
+            "node": "Store in Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Database": {
+      "main": [
+        [
+          {
+            "node": "Log Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
